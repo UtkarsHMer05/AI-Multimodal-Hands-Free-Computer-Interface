@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-cursor-hci"
+version = "1.0.0"
+description = "Offline voice, head, eye-gaze, and tongue-controlled computer interface for assistive HCI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "vosk>=0.3.44,<0.4",
+    "sounddevice>=0.4.6,<0.6",
+    "pyautogui>=0.9.54,<0.10",
+    "mediapipe>=0.10.21,<0.11",
+    "pyobjc-framework-ApplicationServices>=12.2.1,<13; sys_platform == 'darwin'",
+    "certifi>=2023.5.7",
+]
+
+[project.scripts]
+voice-cursor = "voice_cursor.app:main"
+
+[tool.setuptools.packages.find]
+include = ["voice_cursor*"]
