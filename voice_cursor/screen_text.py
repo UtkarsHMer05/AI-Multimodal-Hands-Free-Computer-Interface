@@ -5,12 +5,13 @@ from __future__ import annotations
 import csv
 import ctypes
 import io
-import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from .text_matching import normalize_target_text, target_comparison_key
 
 
 class ScreenTextError(RuntimeError):
@@ -38,7 +39,7 @@ class ScreenTextMatch:
 
 
 def normalize_screen_text(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return normalize_target_text(text)
 
 
 class ScreenTextLocator:
@@ -182,7 +183,7 @@ class ScreenTextLocator:
         scale_x = screen_width / image_width
         scale_y = screen_height / image_height
         target = normalize_screen_text(label)
-        target_tokens = target.split()
+        target_key = target_comparison_key(target)
         matches: list[ScreenTextMatch] = []
         lines: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
 
@@ -218,51 +219,62 @@ class ScreenTextLocator:
                 }
             )
 
-        count = len(target_tokens)
         for words in lines.values():
-            for index in range(0, len(words) - count + 1):
-                group = words[index : index + count]
-                candidate = " ".join(str(word["normalized"]) for word in group)
-                exact = candidate == target
-                if not exact:
-                    continue
-                confidence = sum(float(word["confidence"]) for word in group) / count
-                if confidence < minimum_confidence:
-                    continue
-                left = min(int(word["left"]) for word in group)
-                top = min(int(word["top"]) for word in group)
-                right = max(
-                    int(word["left"]) + int(word["width"]) for word in group
-                )
-                bottom = max(
-                    int(word["top"]) + int(word["height"]) for word in group
-                )
-                x = round(((left + right) / 2) * scale_x)
-                y = round(((top + bottom) / 2) * scale_y)
-                logical_width = max(1, round((right - left) * scale_x))
-                logical_height = max(1, round((bottom - top) * scale_y))
-                bounds = (
-                    x - logical_width // 2,
-                    y - logical_height // 2,
-                    x + logical_width // 2,
-                    y + logical_height // 2,
-                )
-                if any(
-                    ScreenTextLocator._rectangles_intersect(bounds, excluded)
-                    for excluded in excluded_rectangles
-                ):
-                    continue
-                matches.append(
-                    ScreenTextMatch(
-                        text=" ".join(str(word["original"]) for word in group),
-                        confidence=confidence,
-                        x=x,
-                        y=y,
-                        width=logical_width,
-                        height=logical_height,
-                        similarity=1.0,
+            # OCR may split one visual word into several tokens ("back end")
+            # or combine several spoken words into one token ("backend").
+            # Compare every short consecutive group using the same
+            # whitespace-insensitive key used for accessibility controls.
+            for count in range(1, min(8, len(words)) + 1):
+                for index in range(0, len(words) - count + 1):
+                    group = words[index : index + count]
+                    candidate = " ".join(
+                        str(word["normalized"]) for word in group
                     )
-                )
+                    if target_comparison_key(candidate) != target_key:
+                        continue
+                    confidence = (
+                        sum(float(word["confidence"]) for word in group) / count
+                    )
+                    if confidence < minimum_confidence:
+                        continue
+                    left = min(int(word["left"]) for word in group)
+                    top = min(int(word["top"]) for word in group)
+                    right = max(
+                        int(word["left"]) + int(word["width"])
+                        for word in group
+                    )
+                    bottom = max(
+                        int(word["top"]) + int(word["height"])
+                        for word in group
+                    )
+                    x = round(((left + right) / 2) * scale_x)
+                    y = round(((top + bottom) / 2) * scale_y)
+                    logical_width = max(1, round((right - left) * scale_x))
+                    logical_height = max(1, round((bottom - top) * scale_y))
+                    bounds = (
+                        x - logical_width // 2,
+                        y - logical_height // 2,
+                        x + logical_width // 2,
+                        y + logical_height // 2,
+                    )
+                    if any(
+                        ScreenTextLocator._rectangles_intersect(bounds, excluded)
+                        for excluded in excluded_rectangles
+                    ):
+                        continue
+                    matches.append(
+                        ScreenTextMatch(
+                            text=" ".join(
+                                str(word["original"]) for word in group
+                            ),
+                            confidence=confidence,
+                            x=x,
+                            y=y,
+                            width=logical_width,
+                            height=logical_height,
+                            similarity=1.0,
+                        )
+                    )
         return matches
 
     @staticmethod
@@ -286,8 +298,8 @@ class ScreenTextLocator:
             reverse=True,
         ):
             if any(
-                normalize_screen_text(existing.text)
-                == normalize_screen_text(match.text)
+                target_comparison_key(existing.text)
+                == target_comparison_key(match.text)
                 and abs(existing.x - match.x) <= 8
                 and abs(existing.y - match.y) <= 8
                 for existing in result

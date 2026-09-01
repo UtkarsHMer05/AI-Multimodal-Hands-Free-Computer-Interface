@@ -367,7 +367,7 @@ class ActionExecutor:
             return ActionResult(
                 False,
                 f'No button or visible screen text matching "{action.label}" '
-                "was found outside the Voice Cursor window.",
+                "was found outside visible Voice Cursor content.",
             )
 
         current = automation.position()

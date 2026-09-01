@@ -4,7 +4,7 @@ set -e
 project_dir="${0:A:h}"
 cd "$project_dir"
 
-if [[ ! -x ".venv/bin/voice-cursor" ]]; then
+if [[ ! -x ".venv/bin/python" ]]; then
   echo "Project environment is missing. Run the setup steps in README.md first."
   read -r "?Press Return to close..."
   exit 1
@@ -19,7 +19,7 @@ echo "Optional in-app Head Tracking, Eye Gaze, and Tongue Clicks are available."
 echo "The Voice Cursor transcript area is always excluded."
 echo "Wait until the app says 'Listening with MacParakeet' before speaking."
 echo "Do not close this Terminal window while the application is running."
-.venv/bin/voice-cursor \
+.venv/bin/python -m voice_cursor \
   --start-enabled \
   --movement-pixels 180 \
   --speech-engine parakeet \

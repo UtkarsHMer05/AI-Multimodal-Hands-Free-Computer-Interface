@@ -55,6 +55,13 @@ class AccessibilityControlTests(unittest.TestCase):
         self.assertEqual([item.label for item in plural], ["Projects"])
         self.assertEqual(locator.find("projected"), [])
 
+    def test_target_matching_ignores_case_spaces_and_separators(self):
+        locator = FakeLocator([control("BACKEND")])
+        for spoken in ("backend", "back end", "BACK END", "back-end"):
+            with self.subTest(spoken=spoken):
+                matches = locator.find(spoken)
+                self.assertEqual([item.label for item in matches], ["BACKEND"])
+
     def test_differently_named_desktop_icons_are_excluded_from_ocr(self):
         locator = FakeLocator(
             [

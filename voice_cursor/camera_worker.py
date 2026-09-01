@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+import math
 from pathlib import Path
 
 
@@ -33,6 +34,27 @@ def _eye_ratio(
         (iris_x - left) / max(right - left, 1e-6),
         (iris_y - top) / max(bottom - top, 1e-6),
     )
+
+
+def _point_distance(landmarks, first: int, second: int) -> float:
+    dx = float(landmarks[first].x) - float(landmarks[second].x)
+    dy = float(landmarks[first].y) - float(landmarks[second].y)
+    return math.hypot(dx, dy)
+
+
+def eye_openness(landmarks) -> float:
+    """Return scale-independent openness averaged across both eyes."""
+    right_width = max(_point_distance(landmarks, 33, 133), 1e-6)
+    left_width = max(_point_distance(landmarks, 362, 263), 1e-6)
+    right_gap = (
+        _point_distance(landmarks, 159, 145)
+        + _point_distance(landmarks, 158, 153)
+    ) / (2.0 * right_width)
+    left_gap = (
+        _point_distance(landmarks, 386, 374)
+        + _point_distance(landmarks, 385, 380)
+    ) / (2.0 * left_width)
+    return (right_gap + left_gap) / 2.0
 
 
 def tongue_features(rgb_frame, landmarks) -> list[float]:
@@ -116,6 +138,7 @@ def measurements(landmarks) -> dict[str, float]:
         "head_y": head_y,
         "gaze_x": (right_eye[0] + left_eye[0]) / 2.0,
         "gaze_y": (right_eye[1] + left_eye[1]) / 2.0,
+        "eye_openness": eye_openness(landmarks),
     }
 
 
