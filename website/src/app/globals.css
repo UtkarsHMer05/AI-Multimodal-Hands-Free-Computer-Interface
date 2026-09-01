@@ -1,0 +1,198 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --canvas: #f0f0f0;
+  --ink: #121212;
+  --red: #d02020;
+  --blue: #1040c0;
+  --yellow: #f0c020;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-outfit), system-ui, sans-serif;
+  font-weight: 500;
+}
+
+::selection {
+  background: var(--yellow);
+  color: var(--ink);
+}
+
+/* Bauhaus dot-grid textures */
+.dot-grid {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.35) 2px, transparent 2px);
+  background-size: 20px 20px;
+}
+
+.dot-grid-dark {
+  background-image: radial-gradient(rgba(18, 18, 18, 0.12) 2px, transparent 2px);
+  background-size: 20px 20px;
+}
+
+/* Hard-edge triangular decoration */
+.triangle-up {
+  clip-path: polygon(50% 0, 0 100%, 100% 100%);
+}
+
+/* Physical button press: translate into the removed shadow */
+.btn-bauhaus {
+  @apply inline-flex items-center justify-center gap-2 border-2 border-ink font-bold uppercase tracking-wider;
+  @apply shadow-hard transition-transform duration-200 ease-out;
+  @apply hover:-translate-y-0.5;
+  @apply active:translate-x-[2px] active:translate-y-[2px] active:shadow-none;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ink;
+}
+
+.btn-bauhaus-sm {
+  @apply text-sm px-4 py-2;
+}
+
+.btn-bauhaus-md {
+  @apply text-base px-6 py-3;
+}
+
+/* Card with hard shadow */
+.card-bauhaus {
+  @apply relative bg-white border-2 md:border-4 border-ink shadow-hard-lg transition-transform duration-200 ease-out;
+}
+
+.card-bauhaus:hover {
+  @apply -translate-y-1;
+}
+
+/* Accessible skip link */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  z-index: 100;
+  background: var(--yellow);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  padding: 0.5rem 1rem;
+  font-weight: 700;
+}
+
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+/* Numbered click-ring animation (mirrors the app's non-activating overlay) */
+@keyframes click-ring-expand {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}
+
+.click-ring {
+  animation: click-ring-expand 0.7s ease-out forwards;
+}
+
+/* Continuous marquee for the command ticker */
+@keyframes marquee-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee-track {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: marquee-scroll 30s linear infinite;
+}
+
+/* Live pulse dot for "listening" states */
+@keyframes pulse-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.pulse-dot {
+  animation: pulse-blink 1s ease-in-out infinite;
+}
+
+/* Geometric backdrop drift for hero shapes */
+@keyframes shape-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate(8px, -6px) rotate(4deg);
+  }
+}
+
+.shape-drift {
+  animation: shape-drift 8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track,
+  .shape-drift,
+  .pulse-dot,
+  .click-ring {
+    animation: none;
+  }
+}
+
+/* macOS-style window chrome for the demo desktop */
+.demo-window {
+  border: 3px solid var(--ink);
+  box-shadow: 8px 8px 0 0 var(--ink);
+  background: #fff;
+}
+
+/* Transcript bar inside the demo desktop */
+.demo-menu-item {
+  @apply block px-3 py-1.5 text-sm font-bold uppercase tracking-wide cursor-pointer select-none;
+}
+
+.demo-menu-item:hover {
+  background: var(--yellow);
+}
+
+/* Code blocks */
+.code-block {
+  @apply bg-ink text-white font-mono text-xs md:text-sm leading-relaxed p-4 border-2 border-ink;
+}
+
+/* Custom scrollbar, hard edges */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--canvas);
+  border-left: 2px solid var(--ink);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ink);
+  border: 2px solid var(--canvas);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--red);
+}

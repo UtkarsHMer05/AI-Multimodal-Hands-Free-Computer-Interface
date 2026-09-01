@@ -340,6 +340,199 @@ class TongueGestureDetector:
         self.last_tap_at = 0.0
 
 
+@dataclass
+class BlinkGestureDetector:
+    """Calibrate eye openness and map rapid blink sequences to clicks.
+
+    Two completed blinks produce a single-click. Four completed blinks produce
+    a double-click. The detector waits after blink two so a four-blink sequence
+    is never prematurely emitted as a single-click.
+    """
+
+    calibration_frames: int = 24
+    sequence_timeout_seconds: float = 0.68
+    minimum_closed_seconds: float = 0.045
+    maximum_closed_seconds: float = 0.55
+
+    def __post_init__(self) -> None:
+        self.phase = "off"
+        self.open_samples: list[float] = []
+        self.closed_samples: list[float] = []
+        self.open_center = 0.0
+        self.closed_center = 0.0
+        self.closed_threshold = 0.0
+        self.open_threshold = 0.0
+        self.phase_ready_at = 0.0
+        self.eye_state = "open"
+        self.closed_frames = 0
+        self.open_frames = 0
+        self.closed_started: float | None = None
+        self.pending_blinks = 0
+        self.last_blink_at = 0.0
+        self.cooldown_until = 0.0
+
+    @property
+    def calibrated(self) -> bool:
+        return self.phase in {"arming", "ready"}
+
+    @property
+    def freeze_pointer(self) -> bool:
+        return (
+            self.phase
+            in {"open_calibration", "closed_wait", "closed_calibration", "arming"}
+            or self.eye_state == "closed"
+            or self.pending_blinks >= 2
+        )
+
+    def start_calibration(self) -> str:
+        self.phase = "open_calibration"
+        self.open_samples.clear()
+        self.closed_samples.clear()
+        self._reset_blink_state()
+        self._reset_sequence()
+        return "Blink calibration 1/2: keep both eyes naturally open"
+
+    def disable(self) -> None:
+        self.phase = "off"
+        self._reset_blink_state()
+        self._reset_sequence()
+
+    def update(
+        self,
+        openness: float,
+        *,
+        now: float,
+    ) -> tuple[str | None, str | None]:
+        """Return `(click_action, status_message)` for one camera frame."""
+        if self.phase == "off":
+            return None, None
+        if self.phase == "open_calibration":
+            self.open_samples.append(openness)
+            if len(self.open_samples) >= self.calibration_frames:
+                self.phase = "closed_wait"
+                self.phase_ready_at = now + 1.2
+                return None, "Blink calibration 2/2: close both eyes and hold"
+            return None, None
+        if self.phase == "closed_wait":
+            if now < self.phase_ready_at:
+                return None, None
+            self.phase = "closed_calibration"
+        if self.phase == "closed_calibration":
+            self.closed_samples.append(openness)
+            if len(self.closed_samples) >= self.calibration_frames:
+                if not self._finish_calibration():
+                    self.phase = "off"
+                    return (
+                        None,
+                        "Blink calibration failed—face the camera in brighter "
+                        "light and keep both eyes fully closed in phase 2",
+                    )
+                self.phase = "arming"
+                self.open_frames = 0
+                return (
+                    None,
+                    "Blink calibration complete—open your eyes to arm clicks",
+                )
+            return None, None
+
+        if self.phase == "arming":
+            if openness >= self.open_threshold:
+                self.open_frames += 1
+            else:
+                self.open_frames = 0
+            if self.open_frames >= 4:
+                self.phase = "ready"
+                self._reset_blink_state()
+                return (
+                    None,
+                    "Blink clicks active: 2 rapid blinks = single, 4 = double",
+                )
+            return None, None
+
+        if (
+            self.pending_blinks > 0
+            and now - self.last_blink_at >= self.sequence_timeout_seconds
+        ):
+            return self._finish_sequence(now)
+        if now < self.cooldown_until:
+            return None, None
+
+        if self.eye_state == "open":
+            if openness <= self.closed_threshold:
+                self.closed_frames += 1
+            else:
+                self.closed_frames = 0
+            if self.closed_frames >= 2:
+                self.eye_state = "closed"
+                self.closed_started = now
+                self.open_frames = 0
+            return None, None
+
+        if openness >= self.open_threshold:
+            self.open_frames += 1
+        else:
+            self.open_frames = 0
+        if self.open_frames < 2:
+            return None, None
+
+        started = self.closed_started
+        duration = now - started if started is not None else 0.0
+        self._reset_blink_state()
+        if not self.minimum_closed_seconds <= duration <= self.maximum_closed_seconds:
+            return None, None
+        return self._register_blink(now)
+
+    def _register_blink(self, now: float) -> tuple[str | None, str | None]:
+        self.pending_blinks = min(4, self.pending_blinks + 1)
+        self.last_blink_at = now
+        count = self.pending_blinks
+        if count >= 4:
+            self._reset_sequence()
+            self.cooldown_until = now + 0.55
+            return "double", "4 rapid blinks: double-click"
+        if count == 2:
+            return None, "2 rapid blinks detected—waiting briefly for 4"
+        if count == 3:
+            return None, "3 rapid blinks detected—one more makes a double-click"
+        return None, None
+
+    def _finish_sequence(self, now: float) -> tuple[str | None, str | None]:
+        count = self.pending_blinks
+        self._reset_sequence()
+        if count == 2:
+            self.cooldown_until = now + 0.45
+            return "single", "2 rapid blinks: single-click"
+        if count == 3:
+            return None, "Incomplete 3-blink sequence was ignored"
+        return None, None
+
+    def _finish_calibration(self) -> bool:
+        self.open_center = self._median(self.open_samples)
+        self.closed_center = self._median(self.closed_samples)
+        difference = self.open_center - self.closed_center
+        required_difference = max(0.012, self.open_center * 0.16)
+        if difference < required_difference:
+            return False
+        self.closed_threshold = self.closed_center + difference * 0.38
+        self.open_threshold = self.closed_center + difference * 0.66
+        return True
+
+    @staticmethod
+    def _median(samples: list[float]) -> float:
+        ordered = sorted(samples)
+        return ordered[len(ordered) // 2]
+
+    def _reset_blink_state(self) -> None:
+        self.eye_state = "open"
+        self.closed_frames = 0
+        self.open_frames = 0
+        self.closed_started = None
+
+    def _reset_sequence(self) -> None:
+        self.pending_blinks = 0
+        self.last_blink_at = 0.0
+
+
 class CameraPointerController:
     """Run camera inference out of process and apply its pointer movements."""
 
@@ -353,10 +546,14 @@ class CameraPointerController:
         self._mapper: RelativePointerMapper | None = None
         self._on_status: StatusCallback = lambda _message: None
         self._on_tongue_status: StatusCallback = lambda _message: None
+        self._on_blink_status: StatusCallback = lambda _message: None
         self._on_click_feedback: ClickFeedbackCallback = (
             lambda _action, _x, _y: None
         )
         self._tongue = TongueGestureDetector()
+        self._blink = BlinkGestureDetector()
+        self._combined_calibration_stage: str | None = None
+        self._last_camera_gesture_click_at = 0.0
         self._no_face_reported = False
 
     @property
@@ -368,12 +565,17 @@ class CameraPointerController:
     def tongue_calibrated(self) -> bool:
         return self._tongue.calibrated
 
+    @property
+    def blink_calibrated(self) -> bool:
+        return self._blink.calibrated
+
     def start(
         self,
         mode: TrackingMode,
         *,
         on_status: StatusCallback,
         on_tongue_status: StatusCallback | None = None,
+        on_blink_status: StatusCallback | None = None,
         on_click_feedback: ClickFeedbackCallback | None = None,
     ) -> None:
         if mode not in {"head", "gaze"}:
@@ -382,11 +584,13 @@ class CameraPointerController:
         self.mode = mode
         self._on_status = on_status
         self._on_tongue_status = on_tongue_status or (lambda _message: None)
+        self._on_blink_status = on_blink_status or (lambda _message: None)
         self._on_click_feedback = on_click_feedback or (
             lambda _action, _x, _y: None
         )
         self._stop_event.clear()
         self._mapper = RelativePointerMapper(mode=mode)
+        self._last_camera_gesture_click_at = 0.0
         self._no_face_reported = False
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -396,6 +600,14 @@ class CameraPointerController:
                     "Tongue clicks active: 1 gesture = single, 2 = double, 3 = triple"
                     if self._tongue.phase == "ready"
                     else "Calibration saved—retract your tongue to arm clicks"
+                )
+            )
+        if self._blink.calibrated:
+            self._blink_status(
+                (
+                    "Blink clicks active: 2 rapid blinks = single, 4 = double"
+                    if self._blink.phase == "ready"
+                    else "Blink calibration saved—open your eyes to arm clicks"
                 )
             )
 
@@ -408,11 +620,35 @@ class CameraPointerController:
     def calibrate_tongue(self) -> None:
         if not self.running:
             raise RuntimeError("Start Head Tracking or Start Eye Gaze first")
+        self._combined_calibration_stage = None
         self._tongue_status(self._tongue.start_calibration())
 
     def disable_tongue(self) -> None:
+        self._combined_calibration_stage = None
         self._tongue.disable()
         self._tongue_status("Tongue clicks are off")
+
+    def calibrate_blink(self) -> None:
+        if not self.running:
+            raise RuntimeError("Start Head Tracking or Start Eye Gaze first")
+        self._combined_calibration_stage = None
+        self._blink_status(self._blink.start_calibration())
+
+    def disable_blink(self) -> None:
+        self._combined_calibration_stage = None
+        self._blink.disable()
+        self._blink_status("Blink clicks are off")
+
+    def calibrate_both(self) -> None:
+        """Calibrate tongue first, then automatically begin blink calibration."""
+        if not self.running:
+            raise RuntimeError("Start Head Tracking or Start Eye Gaze first")
+        self._blink.disable()
+        self._combined_calibration_stage = "tongue"
+        self._tongue_status(
+            "Combined calibration 1/2 • " + self._tongue.start_calibration()
+        )
+        self._blink_status("Combined calibration: blink calibration will follow tongue")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -511,13 +747,57 @@ class CameraPointerController:
         mapper = self._mapper
         if mapper is None or self.mode is None:
             return
+        now = time.monotonic()
         features = tuple(float(value) for value in message["tongue_features"])
         tongue_action, tongue_status = self._tongue.update(
             features,
-            now=time.monotonic(),
+            now=now,
         )
         if tongue_status is not None:
             self._tongue_status(tongue_status)
+
+        blink_action, blink_status = self._blink.update(
+            float(message.get("eye_openness", 1.0)),
+            now=now,
+        )
+        if blink_status is not None:
+            self._blink_status(blink_status)
+
+        if (
+            self._combined_calibration_stage == "tongue"
+            and self._tongue.phase == "ready"
+        ):
+            self._combined_calibration_stage = "blink"
+            self._blink_status(
+                "Combined calibration 2/2 • " + self._blink.start_calibration()
+            )
+        elif (
+            self._combined_calibration_stage == "blink"
+            and self._blink.phase == "ready"
+        ):
+            self._combined_calibration_stage = None
+            self._tongue_status(
+                "Tongue clicks active: 1 gesture = single, 2 = double, 3 = triple"
+            )
+            self._blink_status(
+                "Both active • Blink: 2 rapid blinks = single, 4 = double"
+            )
+        elif (
+            self._combined_calibration_stage == "tongue"
+            and self._tongue.phase == "off"
+        ):
+            self._combined_calibration_stage = None
+            self._blink_status("Combined calibration stopped after tongue failure")
+        elif (
+            self._combined_calibration_stage == "blink"
+            and self._blink.phase == "off"
+        ):
+            self._combined_calibration_stage = None
+            self._tongue_status("Tongue clicks remain active")
+
+        if self._combined_calibration_stage is not None:
+            tongue_action = None
+            blink_action = None
 
         prefix = "head" if self.mode == "head" else "gaze"
         movement = mapper.update(
@@ -530,10 +810,10 @@ class CameraPointerController:
                 self._status(
                     f"{label} control active • Recalibrate if the cursor drifts"
                 )
-            self._perform_tongue_action(tongue_action)
+            self._perform_camera_gesture_actions(tongue_action, blink_action)
             return
         dx, dy = movement
-        if self._tongue.freeze_pointer:
+        if self._tongue.freeze_pointer or self._blink.freeze_pointer:
             dx = 0
             dy = 0
         try:
@@ -543,14 +823,48 @@ class CameraPointerController:
             pyautogui.PAUSE = 0
             if dx != 0 or dy != 0:
                 pyautogui.moveRel(dx, dy, duration=0)
-            self._perform_tongue_action(tongue_action, automation=pyautogui)
+            self._perform_camera_gesture_actions(
+                tongue_action,
+                blink_action,
+                automation=pyautogui,
+            )
         except Exception as exc:
             self._stop_event.set()
             raise RuntimeError(
                 f"cursor movement failed ({exc}); camera control was stopped"
             ) from exc
 
-    def _perform_tongue_action(self, action: str | None, *, automation=None) -> None:
+    def _perform_camera_gesture_actions(
+        self,
+        tongue_action: str | None,
+        blink_action: str | None,
+        *,
+        automation=None,
+    ) -> None:
+        """Execute at most one near-simultaneous camera gesture action."""
+        candidates = [
+            ("tongue", tongue_action),
+            ("blink", blink_action),
+        ]
+        for source, action in candidates:
+            if action is None:
+                continue
+            now = time.monotonic()
+            if now - self._last_camera_gesture_click_at < 0.45:
+                status = (
+                    "Blink click suppressed because another gesture just clicked"
+                    if source == "blink"
+                    else "Tongue click suppressed because another gesture just clicked"
+                )
+                if source == "blink":
+                    self._blink_status(status)
+                else:
+                    self._tongue_status(status)
+                continue
+            self._perform_click_action(action, automation=automation)
+            self._last_camera_gesture_click_at = now
+
+    def _perform_click_action(self, action: str | None, *, automation=None) -> None:
         if action is None:
             return
         if automation is None:
@@ -601,8 +915,15 @@ class CameraPointerController:
         except Exception:
             pass
 
+    def _perform_tongue_action(self, action: str | None, *, automation=None) -> None:
+        """Backward-compatible wrapper used by existing tests and callers."""
+        self._perform_click_action(action, automation=automation)
+
     def _status(self, message: str) -> None:
         self._on_status(message)
 
     def _tongue_status(self, message: str) -> None:
         self._on_tongue_status(message)
+
+    def _blink_status(self, message: str) -> None:
+        self._on_blink_status(message)

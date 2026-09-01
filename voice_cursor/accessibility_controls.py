@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+
+from .text_matching import (
+    normalize_target_text,
+    target_comparison_key,
+)
 
 
 class AccessibilityControlError(RuntimeError):
@@ -12,7 +16,7 @@ class AccessibilityControlError(RuntimeError):
 
 def normalize_control_text(text: str) -> str:
     """Normalize a spoken or accessibility label for safe comparison."""
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return normalize_target_text(text)
 
 
 @dataclass(frozen=True)
@@ -60,14 +64,15 @@ class AccessibilityControlLocator:
     ) -> tuple[list[InteractiveControl], tuple[tuple[int, int, int, int], ...]]:
         """Return exact matches plus desktop icons OCR must not reinterpret."""
         target = normalize_control_text(label)
-        if not target:
+        target_key = target_comparison_key(target)
+        if not target_key:
             return [], ()
         controls = self.interactive_controls()
 
         exact = [
             control
             for control in controls
-            if normalize_control_text(control.label) == target
+            if target_comparison_key(control.label) == target_key
         ]
         conflicts = tuple(
             (
@@ -79,7 +84,7 @@ class AccessibilityControlLocator:
             for control in controls
             if control.app_name == "Finder"
             and control.role == "AXImage"
-            and normalize_control_text(control.label) != target
+            and target_comparison_key(control.label) != target_key
         )
         return self._deduplicate(exact), conflicts
 
@@ -324,8 +329,8 @@ class AccessibilityControlLocator:
         deduplicated: list[InteractiveControl] = []
         for control in controls:
             duplicate = any(
-                normalize_control_text(existing.label)
-                == normalize_control_text(control.label)
+                target_comparison_key(existing.label)
+                == target_comparison_key(control.label)
                 and abs(existing.center[0] - control.center[0]) <= 3
                 and abs(existing.center[1] - control.center[1]) <= 3
                 for existing in deduplicated

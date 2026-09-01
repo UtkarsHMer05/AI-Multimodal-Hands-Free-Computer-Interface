@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import random
 import subprocess
 import sys
@@ -38,6 +39,8 @@ from .commands import (
 from .evaluation import EvaluationSession
 from .parakeet_speech import ParakeetMicrophoneListener, default_helper_path
 from .speech import VoskMicrophoneListener, ensure_model
+from .text_matching import target_comparison_key
+from .window_visibility import intersection_area, visible_regions
 
 
 class VoiceCursorApp:
@@ -94,6 +97,7 @@ class VoiceCursorApp:
         self.evaluation_text = StringVar(value="Evaluation is not running")
         self.camera_status_text = StringVar(value="Camera control is off")
         self.tongue_status_text = StringVar(value="Tongue clicks are off")
+        self.blink_status_text = StringVar(value="Blink clicks are off")
 
         self._build_interface(dry_run=dry_run, movement_pixels=movement_pixels)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -228,6 +232,36 @@ class VoiceCursorApp:
             aliases=("stop tongue", "disable tongue clicks"),
         ).pack(side=LEFT)
 
+        blink_frame = Frame(self.root, padx=18)
+        blink_frame.pack(fill=X, pady=(0, 4))
+        Label(blink_frame, text="Blink:", width=12, anchor="w").pack(side=LEFT)
+        Label(
+            blink_frame,
+            textvariable=self.blink_status_text,
+            anchor="w",
+        ).pack(side=LEFT, fill=X, expand=True)
+
+        blink_buttons = Frame(self.root, padx=18)
+        blink_buttons.pack(fill=X, pady=(0, 8))
+        self._project_button(
+            blink_buttons,
+            text="Calibrate Blink Clicks",
+            command=self.calibrate_blink_control,
+            aliases=("calibrate blink", "blink calibration"),
+        ).pack(side=LEFT)
+        self._project_button(
+            blink_buttons,
+            text="Disable Blink",
+            command=self.disable_blink_control,
+            aliases=("stop blink", "disable blink clicks"),
+        ).pack(side=LEFT, padx=6)
+        self._project_button(
+            blink_buttons,
+            text="Calibrate Both",
+            command=self.calibrate_both_gestures,
+            aliases=("calibrate both clicks", "calibrate tongue and blink"),
+        ).pack(side=LEFT)
+
         evaluation_frame = Frame(self.root, padx=18, pady=8)
         evaluation_frame.pack(fill=X)
         self._project_button(
@@ -262,6 +296,8 @@ class VoiceCursorApp:
                 "right click <name>  •  move to <name>"
                 "\nTongue after calibration: 1 gesture = single click  •  "
                 "2 = double click  •  3 = triple click"
+                "\nBlink after calibration: 2 rapid blinks = single click  •  "
+                "4 rapid blinks = double click"
             ),
             justify=LEFT,
             wraplength=730,
@@ -371,7 +407,7 @@ class VoiceCursorApp:
             )
             self._append_log(
                 "Searching interactive controls, then the visible screen while "
-                "excluding the Voice Cursor window"
+                "excluding only visible Voice Cursor content"
             )
             self.root.after(
                 10,
@@ -419,7 +455,7 @@ class VoiceCursorApp:
         else:
             result = self.executor.execute_screen_text(
                 screen_action,
-                excluded_rectangles=(self._voice_cursor_rectangle(),),
+                excluded_rectangles=self._visible_voice_cursor_rectangles(),
             )
         result_name = "success" if result.success else "ignored/error"
         command_name = f"{screen_action.kind.value}:{screen_action.label}"
@@ -437,11 +473,74 @@ class VoiceCursorApp:
         bottom = top + self.root.winfo_height() + 57
         return (left, top, right, bottom)
 
+    def _visible_voice_cursor_rectangles(
+        self,
+    ) -> tuple[tuple[int, int, int, int], ...]:
+        """Exclude only project-window regions not covered by another app.
+
+        Finder or browser windows can sit in front of Voice Cursor while still
+        overlapping its screen coordinates. Excluding the entire project
+        rectangle would incorrectly discard OCR words in those foreground
+        windows. Quartz supplies front-to-back window order, allowing the
+        covered areas to be subtracted from the exclusion safely.
+        """
+        project_rectangle = self._voice_cursor_rectangle()
+        try:
+            import Quartz
+
+            options = (
+                Quartz.kCGWindowListOptionOnScreenOnly
+                | Quartz.kCGWindowListExcludeDesktopElements
+            )
+            windows = Quartz.CGWindowListCopyWindowInfo(
+                options,
+                Quartz.kCGNullWindowID,
+            ) or []
+            own_pid = os.getpid()
+            candidates: list[tuple[int, int]] = []
+            parsed_windows: list[
+                tuple[int, int, float, tuple[int, int, int, int]]
+            ] = []
+
+            for index, window in enumerate(windows):
+                try:
+                    pid = int(window.get(Quartz.kCGWindowOwnerPID, 0))
+                    layer = int(window.get(Quartz.kCGWindowLayer, -1))
+                    alpha = float(window.get(Quartz.kCGWindowAlpha, 1.0))
+                    bounds = window.get(Quartz.kCGWindowBounds, {})
+                    left = round(float(bounds.get("X", 0)))
+                    top = round(float(bounds.get("Y", 0)))
+                    width = round(float(bounds.get("Width", 0)))
+                    height = round(float(bounds.get("Height", 0)))
+                except (TypeError, ValueError):
+                    continue
+                if width < 1 or height < 1:
+                    continue
+                rectangle = (left, top, left + width, top + height)
+                parsed_windows.append((index, pid, alpha, rectangle))
+                if pid == own_pid and 0 <= layer <= 19 and alpha > 0:
+                    area = intersection_area(project_rectangle, rectangle)
+                    if area > 0:
+                        candidates.append((area, index))
+
+            if not candidates:
+                return (project_rectangle,)
+            _area, own_window_index = max(candidates)
+            foreground = tuple(
+                rectangle
+                for index, pid, alpha, rectangle in parsed_windows
+                if index < own_window_index and pid != own_pid and alpha > 0
+            )
+            return visible_regions(project_rectangle, foreground)
+        except Exception:
+            # Fail safely by preserving the original full-window exclusion.
+            return (project_rectangle,)
+
     def _matching_project_buttons(
         self,
         spoken_label: str,
     ) -> list[tuple[Button, str, tuple[str, ...]]]:
-        target = normalize_control_text(spoken_label)
+        target = target_comparison_key(spoken_label)
         if not target:
             return []
 
@@ -449,7 +548,7 @@ class VoiceCursorApp:
         for item in self.local_button_targets:
             _button, label, aliases = item
             names = (label, *aliases)
-            normalized_names = [normalize_control_text(name) for name in names]
+            normalized_names = [target_comparison_key(name) for name in names]
             if target in normalized_names:
                 exact.append(item)
         return exact
@@ -503,6 +602,7 @@ class VoiceCursorApp:
             mode,
             on_status=self._threadsafe_camera_status,
             on_tongue_status=self._threadsafe_tongue_status,
+            on_blink_status=self._threadsafe_blink_status,
             on_click_feedback=self._threadsafe_click_feedback,
         )
         self._append_log(
@@ -516,6 +616,11 @@ class VoiceCursorApp:
             "Calibration saved; restart the camera to resume"
             if self.camera_controller.tongue_calibrated
             else "Tongue clicks are off"
+        )
+        self.blink_status_text.set(
+            "Calibration saved; restart the camera to resume"
+            if self.camera_controller.blink_calibrated
+            else "Blink clicks are off"
         )
         self._append_log("Camera pointer control stopped")
 
@@ -556,6 +661,44 @@ class VoiceCursorApp:
         try:
             self.root.after(0, self.tongue_status_text.set, message)
             self.root.after(0, self._append_log, f"Tongue: {message}")
+        except RuntimeError:
+            return
+
+    def calibrate_blink_control(self) -> None:
+        if not self.camera_controller.running:
+            message = "Start Head Tracking or Start Eye Gaze before blink calibration."
+            self.blink_status_text.set(message)
+            self.feedback_text.set(message)
+            self._append_log(message)
+            return
+        try:
+            self.camera_controller.calibrate_blink()
+            self._append_log("In-app blink calibration started")
+        except RuntimeError as exc:
+            self.blink_status_text.set(str(exc))
+
+    def disable_blink_control(self) -> None:
+        self.camera_controller.disable_blink()
+        self._append_log("In-app blink clicks disabled")
+
+    def calibrate_both_gestures(self) -> None:
+        if not self.camera_controller.running:
+            message = "Start Head Tracking or Start Eye Gaze before calibration."
+            self.tongue_status_text.set(message)
+            self.blink_status_text.set(message)
+            self.feedback_text.set(message)
+            self._append_log(message)
+            return
+        try:
+            self.camera_controller.calibrate_both()
+            self._append_log("Sequential tongue and blink calibration started")
+        except RuntimeError as exc:
+            self.blink_status_text.set(str(exc))
+
+    def _threadsafe_blink_status(self, message: str) -> None:
+        try:
+            self.root.after(0, self.blink_status_text.set, message)
+            self.root.after(0, self._append_log, f"Blink: {message}")
         except RuntimeError:
             return
 
